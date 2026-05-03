@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+.idea/
+.vscode/
+
+# Ignore large output files or local environment variables if any
+# results/ 
+# .env

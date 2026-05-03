@@ -1,0 +1,38 @@
+model:
+  name: "meta-llama/Meta-Llama-3-8B"
+  dtype: "float16"
+  use_tiny_model: false
+
+cache:
+  budget_ratio: 0.1
+  recent_window: 128
+  heavy_hitter_ratio: 0.5
+  sink_tokens: 4
+
+policy:
+  hidden_dim: 128
+  num_features: 5
+  num_tiers: 3
+  attention_window: 32
+  learning_rate: 0.001
+  training_epochs: 10
+  training_samples: 10000
+
+distributed:
+  simulate: false
+  num_gpus: 4
+  backend: "nccl"
+  comm_penalty_lambda: 0.1
+  prefetch_top_k: 64
+  migration_threshold: 0.3
+  tensor_parallel_size: 4
+  pipeline_parallel_size: 1
+
+evaluation:
+  context_lengths: [4096, 8192, 16384, 32768, 65536]
+  batch_size: 1
+  max_new_tokens: 256
+  longbench_tasks: ["narrativeqa", "qasper", "multifieldqa_en", "hotpotqa",
+                    "2wikimqa", "musique", "gov_report", "qmsum", "multi_news",
+                    "trec", "triviaqa", "samsum", "passage_count",
+                    "passage_retrieval_en", "lcc", "repobench-p"]
