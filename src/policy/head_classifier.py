@@ -86,10 +86,12 @@ def classify_heads(
 class HeadClassifier:
     """Stateful head classifier with per-head-type AdaptKV budget parameters."""
 
+    # Each head type must retain more total tokens than the uniform baseline
+    # (uniform: fp16=0.4 + compress=2.5 = 2.9× budget) to prove per-head wins.
     TYPE_PARAMS = {
-        HEAD_LOCAL:  {"recent_frac": 0.80, "fp16_ratio": 0.5,  "compress_ratio": 2.0},
-        HEAD_GLOBAL: {"recent_frac": 0.20, "fp16_ratio": 0.35, "compress_ratio": 2.6},
-        HEAD_SINK:   {"recent_frac": 0.10, "fp16_ratio": 0.3,  "compress_ratio": 3.0,
+        HEAD_LOCAL:  {"recent_frac": 0.80, "fp16_ratio": 0.55, "compress_ratio": 2.5},
+        HEAD_GLOBAL: {"recent_frac": 0.20, "fp16_ratio": 0.35, "compress_ratio": 3.0},
+        HEAD_SINK:   {"recent_frac": 0.10, "fp16_ratio": 0.40, "compress_ratio": 3.0,
                       "always_keep_sink": 4},
     }
 
