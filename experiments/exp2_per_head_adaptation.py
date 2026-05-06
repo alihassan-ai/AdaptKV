@@ -105,20 +105,60 @@ def run(device: str = "cuda:0", save_dir: str = "results"):
     model, tokenizer, model_name = load_model_for_experiments(device)
 
     print("  Classifying attention heads on calibration set...")
-    calib_per_layer = defaultdict(list)
+    # Collect per-prompt, per-layer entropy and sink-mass stats (scalars per head).
+    # We can't stack raw attention tensors because different prompts produce
+    # different sequence lengths after tokenization.
+    num_layers_found = None
+    entropy_accum = None   # [num_layers, num_heads]
+    sink_accum    = None   # [num_layers, num_heads]
+    n_prompts     = 0
+
     for prompt in CALIBRATION_PROMPTS:
         attns, _ = get_attention_weights(model, tokenizer, prompt, device, MAX_SEQ_LEN)
-        for l, a in enumerate(attns):
-            calib_per_layer[l].append(a)
+        if num_layers_found is None:
+            num_layers_found = len(attns)
+            num_heads_found  = attns[0].shape[0]
+            entropy_accum = torch.zeros(num_layers_found, num_heads_found)
+            sink_accum    = torch.zeros(num_layers_found, num_heads_found)
 
-    avg_per_layer = [
-        torch.stack(calib_per_layer[l]).mean(dim=0)
-        for l in range(len(calib_per_layer))
-    ]
-    classifier = HeadClassifier().fit(avg_per_layer)
-    head_types_per_layer = classifier.head_types
+        for l, attn in enumerate(attns):
+            S = attn.shape[-1]
+            log_attn = (attn + 1e-10).log()
+            entropy  = -(attn * log_attn).sum(dim=-1).mean(dim=-1)   # [H]
+            max_ent  = torch.tensor(float(S)).log().clamp(min=1e-6)
+            entropy_accum[l] += (entropy / max_ent).cpu()
+            sink_mass = attn[:, :, :min(4, S)].sum(dim=-1).mean(dim=-1)  # [H]
+            sink_accum[l] += sink_mass.cpu()
+        n_prompts += 1
 
-    counts = classifier.stats["counts"]
+    entropy_accum /= max(n_prompts, 1)
+    sink_accum    /= max(n_prompts, 1)
+
+    # Build head_types directly from averaged stats
+    head_types_per_layer = torch.zeros(num_layers_found, num_heads_found, dtype=torch.long)
+    for l in range(num_layers_found):
+        for h in range(num_heads_found):
+            if entropy_accum[l, h].item() > 0.60:
+                head_types_per_layer[l, h] = HEAD_GLOBAL
+            elif sink_accum[l, h].item() > 0.30:
+                head_types_per_layer[l, h] = HEAD_SINK
+            else:
+                head_types_per_layer[l, h] = HEAD_LOCAL
+
+    flat = head_types_per_layer.reshape(-1).tolist()
+    counts = {
+        "local":  flat.count(HEAD_LOCAL),
+        "global": flat.count(HEAD_GLOBAL),
+        "sink":   flat.count(HEAD_SINK),
+    }
+    # Wrap in a mock classifier object for consistency with downstream code
+    class _MockClassifier:
+        TYPE_PARAMS = HeadClassifier.TYPE_PARAMS
+        def __init__(self, ht, st):
+            self.head_types = ht
+            self.stats = st
+    classifier = _MockClassifier(head_types_per_layer, {"counts": counts})
+
     print(f"  Head types: local={counts['local']}  global={counts['global']}  sink={counts['sink']}")
 
     uniform_results = defaultdict(list)

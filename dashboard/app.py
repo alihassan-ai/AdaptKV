@@ -277,6 +277,9 @@ def make_scaling_fig():
             ax1.plot(sl_list, [d.get(str(sl), 0) for sl in sl_list],
                      "o-", color=c, label=lbl, linewidth=2, markersize=7)
         ax1.set_xscale("log", base=2)
+        from matplotlib.ticker import ScalarFormatter
+        ax1.xaxis.set_major_formatter(ScalarFormatter())
+        ax1.ticklabel_format(axis='x', style='plain')
         ax1.set_xlabel("Sequence Length (tokens)", fontsize=11)
         ax1.set_ylabel("KV Cache Memory (MB)", fontsize=11)
         ax1.set_title("Memory Footprint vs Sequence Length", fontsize=11, fontweight="bold")
@@ -459,7 +462,7 @@ def analyze_tokens(text: str, budget_ratio: float, strategy: str):
 def build_app():
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    with gr.Blocks(title="AdaptKV Dashboard", theme=gr.themes.Base()) as demo:
+    with gr.Blocks(title="AdaptKV Dashboard") as demo:
         gr.Markdown("""
 # AdaptKV: Adaptive KV Cache Compression
 ### Proof-of-Concept Experiments Dashboard
@@ -593,4 +596,5 @@ Run `bash run.sh` to populate results, then refresh each tab.
 
 if __name__ == "__main__":
     demo = build_app()
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=True, show_error=True)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=True, show_error=True,
+                theme=gr.themes.Base())
