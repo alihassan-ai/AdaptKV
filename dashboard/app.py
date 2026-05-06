@@ -484,134 +484,144 @@ def analyze_tokens(text, budget_ratio, strategy):
 
 # ── Build app ─────────────────────────────────────────────────────────────────
 
+def _safe_md(fn):
+    """Call a markdown-generating function safely."""
+    try:
+        return fn()
+    except Exception:
+        return "Error loading results."
+
+
 def build_app():
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
+    # Pre-compute ALL figures and markdown at build time
+    print("  Building dashboard figures...")
+    fig_overview   = make_overview_fig()
+    fig_three_tier = make_three_tier_fig()
+    fig_perhead    = make_perhead_fig()
+    fig_comm       = make_comm_fig()
+    fig_prefetch   = make_prefetch_fig()
+    fig_scaling    = make_scaling_fig()
+    fig_memory     = make_memory_fig()
+
+    md_sysinfo = overview_sysinfo()
+
+    def _exp1_md():
+        r = load("exp1_results"); res = r.get("results", {})
+        if not res: return "No results yet."
+        lines = ["| Ratio | H2O | AdaptKV | Delta |","|---|---|---|---|"]
+        for cr in sorted([int(k) for k in res.keys()]):
+            d = res[str(cr)]
+            lines.append(f"| {cr}x | {d['h2o_mean']*100:.1f}% | "
+                         f"{d['adaptkv_mean']*100:.1f}% | {d['improvement_abs']*100:+.1f}pp |")
+        lines.append(f"\n**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
+        return "\n".join(lines)
+
+    def _exp2_md():
+        r = load("exp2_results")
+        if not r: return "No results yet."
+        return (f"**Uniform:** {r.get('uniform_mean',0)*100:.2f}%  "
+                f"**Per-Head:** {r.get('perhead_mean',0)*100:.2f}%  "
+                f"**Delta = {r.get('improvement_pp',0):+.2f} pp**\n\n"
+                f"**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
+
+    def _exp3_md():
+        r = load("exp3_results")
+        if not r: return "No results yet."
+        return (f"**Naive:** {r.get('naive_mean_mb',0):.4f} MB/step  "
+                f"**Comm-Aware:** {r.get('comm_aware_mean_mb',0):.4f} MB/step  "
+                f"**Reduction: {r.get('reduction_pct',0):.1f}%**\n\n"
+                f"**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
+
+    def _exp4_md():
+        r = load("exp4_results")
+        if not r: return "No results yet."
+        meas = r.get("measurements", [])
+        lines = [f"**Mean overlap: {r.get('overall_overlap_pct',0):.1f}%**\n",
+                 "| Size (MB) | Sync | Async | Overlap |","|---|---|---|---|"]
+        for m in meas:
+            lines.append(f"| {m['size_mb']:.1f} | {m['sync_ms']:.2f}ms | "
+                         f"{m['async_ms']:.2f}ms | {m['overlap_pct']:.1f}% |")
+        lines.append(f"\n**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
+        return "\n".join(lines)
+
+    def _exp5_md():
+        r = load("exp5_results")
+        if not r: return "No results yet."
+        red = r.get("memory_reduction_pct", {})
+        return (f"**H2O reduction:** {red.get('h2o',0):.1f}%  "
+                f"**AdaptKV reduction:** {red.get('adaptkv',0):.1f}%\n\n"
+                f"**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
+
+    def _exp6_md():
+        r = load("exp6_results")
+        if not r: return "No results yet."
+        mem = r.get("memory_breakdown", {})
+        lines = [f"**AdaptKV reduction:** {r.get('adaptkv_reduction_pct',0):.1f}%  "
+                 f"**Avg cosine sim:** {r.get('avg_cosine_similarity',0):.4f}\n",
+                 "| Strategy | FP16 | INT4 | Meta | Total |","|---|---|---|---|---|"]
+        for s, lbl in [("full","Full"),("h2o","H2O"),("adaptkv","AdaptKV")]:
+            d = mem.get(s, {})
+            lines.append(f"| {lbl} | {d.get('fp16_mb',0):.1f}MB | "
+                         f"{d.get('int4_mb',0):.1f}MB | "
+                         f"{d.get('metadata_mb',0):.1f}MB | "
+                         f"{d.get('total_computed_mb',0):.1f}MB |")
+        lines.append(f"\n**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
+        return "\n".join(lines)
+
+    md1 = _safe_md(_exp1_md)
+    md2 = _safe_md(_exp2_md)
+    md3 = _safe_md(_exp3_md)
+    md4 = _safe_md(_exp4_md)
+    md5 = _safe_md(_exp5_md)
+    md6 = _safe_md(_exp6_md)
+
+    print("  Figures built. Launching Gradio...")
+
     with gr.Blocks(title="AdaptKV Dashboard") as demo:
-        gr.Markdown("""
-# AdaptKV: Adaptive KV Cache Compression
-### Proof-of-Concept Experiments Dashboard
-Run `bash run.sh` to populate results, then refresh each tab.
-""")
+        gr.Markdown("# AdaptKV: Adaptive KV Cache Compression\n"
+                    "### Proof-of-Concept Experiments Dashboard")
 
         with gr.Tab("Overview"):
             gr.Markdown("## Claims Summary")
-            gr.Plot(value=make_overview_fig, label="Summary")
-            gr.Markdown(value=overview_sysinfo)
+            gr.Plot(value=fig_overview, label="Summary")
+            gr.Markdown(value=md_sysinfo)
 
         with gr.Tab("Three-Tier vs Binary"):
-            gr.Markdown("## Exp 1: Three-Tier vs Binary Eviction\n"
-                        "AdaptKV retains more attention mass than H2O at identical memory budgets.")
-            gr.Plot(value=make_three_tier_fig, label="Three-Tier vs Binary")
-            def three_tier_md():
-                try:
-                    r = load("exp1_results"); res = r.get("results", {})
-                    if not res: return "No results yet."
-                    lines = ["| Ratio | H2O | AdaptKV | Delta |","|---|---|---|---|"]
-                    for cr in sorted([int(k) for k in res.keys()]):
-                        d = res[str(cr)]
-                        lines.append(f"| {cr}x | {d['h2o_mean']*100:.1f}% | "
-                                     f"{d['adaptkv_mean']*100:.1f}% | {d['improvement_abs']*100:+.1f}pp |")
-                    proven = r.get("proven")
-                    lines.append(f"\n**{'PROVEN' if proven else 'NOT PROVEN'}** - {r.get('claim','')}")
-                    return "\n".join(lines)
-                except Exception:
-                    return "Error loading results."
-            gr.Markdown(value=three_tier_md)
+            gr.Markdown("## Exp 1: Three-Tier vs Binary Eviction")
+            gr.Plot(value=fig_three_tier, label="Three-Tier vs Binary")
+            gr.Markdown(value=md1)
 
         with gr.Tab("Per-Head Adaptation"):
             gr.Markdown("## Exp 2: Per-Head vs Uniform Policy")
-            gr.Plot(value=make_perhead_fig, label="Per-Head")
-            def perhead_md():
-                try:
-                    r = load("exp2_results")
-                    if not r: return "No results yet."
-                    return (f"**Uniform:** {r.get('uniform_mean',0)*100:.2f}%  "
-                            f"**Per-Head:** {r.get('perhead_mean',0)*100:.2f}%  "
-                            f"**Delta = {r.get('improvement_pp',0):+.2f} pp**\n\n"
-                            f"**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
-                except Exception:
-                    return "Error loading results."
-            gr.Markdown(value=perhead_md)
+            gr.Plot(value=fig_perhead, label="Per-Head")
+            gr.Markdown(value=md2)
 
         with gr.Tab("Communication"):
             gr.Markdown("## Exp 3: Communication-Aware Placement")
-            gr.Plot(value=make_comm_fig, label="Communication")
-            def comm_md():
-                try:
-                    r = load("exp3_results")
-                    if not r: return "No results yet."
-                    return (f"**Naive:** {r.get('naive_mean_mb',0):.4f} MB/step  "
-                            f"**Comm-Aware:** {r.get('comm_aware_mean_mb',0):.4f} MB/step  "
-                            f"**Reduction: {r.get('reduction_pct',0):.1f}%**\n\n"
-                            f"**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
-                except Exception:
-                    return "Error loading results."
-            gr.Markdown(value=comm_md)
+            gr.Plot(value=fig_comm, label="Communication")
+            gr.Markdown(value=md3)
 
         with gr.Tab("Async Prefetch"):
             gr.Markdown("## Exp 4: Async Prefetch Latency Hiding")
-            gr.Plot(value=make_prefetch_fig, label="Async Prefetch")
-            def prefetch_md():
-                try:
-                    r = load("exp4_results")
-                    if not r: return "No results yet."
-                    meas = r.get("measurements", [])
-                    lines = [f"**Mean overlap: {r.get('overall_overlap_pct',0):.1f}%**\n",
-                             "| Size (MB) | Sync | Async | Overlap |","|---|---|---|---|"]
-                    for m in meas:
-                        lines.append(f"| {m['size_mb']:.1f} | {m['sync_ms']:.2f}ms | "
-                                     f"{m['async_ms']:.2f}ms | {m['overlap_pct']:.1f}% |")
-                    lines.append(f"\n**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
-                    return "\n".join(lines)
-                except Exception:
-                    return "Error loading results."
-            gr.Markdown(value=prefetch_md)
+            gr.Plot(value=fig_prefetch, label="Async Prefetch")
+            gr.Markdown(value=md4)
 
         with gr.Tab("Scaling"):
             gr.Markdown("## Exp 5: Scaling Efficiency")
-            gr.Plot(value=make_scaling_fig, label="Scaling")
-            def scaling_md():
-                try:
-                    r = load("exp5_results")
-                    if not r: return "No results yet."
-                    red = r.get("memory_reduction_pct", {})
-                    return (f"**H2O reduction:** {red.get('h2o',0):.1f}%  "
-                            f"**AdaptKV reduction:** {red.get('adaptkv',0):.1f}%\n\n"
-                            f"**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
-                except Exception:
-                    return "Error loading results."
-            gr.Markdown(value=scaling_md)
+            gr.Plot(value=fig_scaling, label="Scaling")
+            gr.Markdown(value=md5)
 
         with gr.Tab("Memory Analysis"):
             gr.Markdown("## Exp 6: Memory Analysis")
-            gr.Plot(value=make_memory_fig, label="Memory")
-            def memory_md():
-                try:
-                    r = load("exp6_results")
-                    if not r: return "No results yet."
-                    mem = r.get("memory_breakdown", {})
-                    lines = [f"**AdaptKV reduction:** {r.get('adaptkv_reduction_pct',0):.1f}%  "
-                             f"**Avg cosine sim:** {r.get('avg_cosine_similarity',0):.4f}\n",
-                             "| Strategy | FP16 | INT4 | Meta | Total |","|---|---|---|---|---|"]
-                    for s, lbl in [("full","Full"),("h2o","H2O"),("adaptkv","AdaptKV")]:
-                        d = mem.get(s, {})
-                        lines.append(f"| {lbl} | {d.get('fp16_mb',0):.1f}MB | "
-                                     f"{d.get('int4_mb',0):.1f}MB | "
-                                     f"{d.get('metadata_mb',0):.1f}MB | "
-                                     f"{d.get('total_computed_mb',0):.1f}MB |")
-                    lines.append(f"\n**{'PROVEN' if r.get('proven') else 'NOT PROVEN'}** - {r.get('claim','')}")
-                    return "\n".join(lines)
-                except Exception:
-                    return "Error loading results."
-            gr.Markdown(value=memory_md)
+            gr.Plot(value=fig_memory, label="Memory")
+            gr.Markdown(value=md6)
 
         with gr.Tab("Live Demo"):
-            gr.Markdown("""## Live Demo: Token-Level KV Cache Visualization
-- **GREEN** = FP16 full precision (high-importance)
-- **AMBER** = INT4 compressed (medium-importance)
-- **RED strikethrough** = Evicted (low-importance)
-""")
+            gr.Markdown("## Live Demo: Token-Level KV Cache Visualization\n"
+                        "- **GREEN** = FP16 kept  |  **AMBER** = INT4 compressed  |  "
+                        "**RED** = Evicted")
             with gr.Row():
                 with gr.Column(scale=2):
                     text_in = gr.Textbox(
