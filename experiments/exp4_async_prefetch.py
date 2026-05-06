@@ -19,24 +19,37 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.distributed.prefetcher import measure_prefetch_overlap, benchmark_single_gpu_streams
 from src.utils import get_system_info, save_result
 
-SIZES_MB = [1.0, 5.0, 10.0, 25.0, 50.0]
-N_REPS   = 15
+SIZES_MB = [10.0, 25.0, 50.0, 100.0, 200.0]
+N_REPS   = 25
 COLORS = {"sync": "#EF4444", "async": "#3B82F6", "compute": "#94A3B8"}
 
 
 def make_fns(n_elems: int, device: str):
+    """Create compute and copy functions for overlap measurement.
+
+    The copy function uses pinned-memory → device transfer (crosses PCIe bus),
+    and the compute function chains multiple matmuls to create substantial work.
+    """
     dtype = torch.float16 if "cuda" in device else torch.float32
-    side  = max(64, int(n_elems ** 0.5))
-    A     = torch.randn(side, side, dtype=dtype, device=device)
-    B     = torch.randn(side, side, dtype=dtype, device=device)
-    src   = torch.randn(n_elems, dtype=dtype, device=device)
-    dst   = torch.empty(n_elems, dtype=dtype, device=device)
+
+    # Heavier compute: chain of matmuls to ensure meaningful GPU work
+    side = max(256, int(n_elems ** 0.5))
+    A = torch.randn(side, side, dtype=dtype, device=device)
+    B = torch.randn(side, side, dtype=dtype, device=device)
+
+    # Host-to-device transfer (crosses PCIe bus, unlike device-to-device copy)
+    src_host = torch.randn(n_elems, dtype=dtype).pin_memory()
+    dst_dev  = torch.empty(n_elems, dtype=dtype, device=device)
 
     def compute_fn():
-        torch.mm(A, B)
+        # Chain 3 matmuls to create substantial compute work
+        C = torch.mm(A, B)
+        D = torch.mm(C, A)
+        torch.mm(D, B)
 
     def copy_fn():
-        dst.copy_(src, non_blocking=True)
+        # Host→Device via PCIe (non_blocking enables overlap with compute stream)
+        dst_dev.copy_(src_host, non_blocking=True)
 
     return compute_fn, copy_fn
 

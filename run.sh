@@ -16,7 +16,11 @@ pip install -q --upgrade pip 2>/dev/null || true
 pip install -q torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu124 2>/dev/null \
     || pip install -q torch torchvision torchaudio
+# Install project deps first (requirements.txt has the <4.47 pin)
 pip install -q -r requirements.txt
+# Force-pin transformers <4.47 — versions 4.47+ contain MoE custom_op code that
+# uses string type annotations incompatible with PyTorch's infer_schema on this image.
+pip install -q "transformers>=4.40.0,<4.47.0" --force-reinstall --no-deps
 echo "  ✓ Dependencies installed"
 
 # ── Step 2: Detect GPUs ───────────────────────────────────────────────────────

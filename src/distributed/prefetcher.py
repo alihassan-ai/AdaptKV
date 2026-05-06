@@ -166,6 +166,12 @@ class AsyncPrefetcher:
 
 # ── CUDA-stream experiment utilities ──────────────────────────────────────────
 
+def _median(times):
+    s = sorted(times)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
 def measure_prefetch_overlap(
     compute_fn,
     copy_fn,
@@ -192,7 +198,16 @@ def measure_prefetch_overlap(
         if use_cuda:
             torch.cuda.synchronize(device)
 
-    # Sequential baseline
+    # Warmup: run both functions to prime GPU caches, JIT, and PCIe paths
+    WARMUP = 10
+    for _ in range(WARMUP):
+        copy_fn()
+        compute_fn()
+    if use_cuda:
+        _sync()
+        torch.cuda.empty_cache()
+
+    # Sequential baseline (median over n_reps to suppress outliers)
     sync_times = []
     for _ in range(n_reps):
         if use_cuda:
@@ -207,13 +222,22 @@ def measure_prefetch_overlap(
             sync_times.append(s.elapsed_time(e))
         else:
             sync_times.append((_time.perf_counter() - t0) * 1000)
-    sync_ms = sum(sync_times) / len(sync_times)
+    sync_ms = _median(sync_times)
 
     # Overlapped: copy on copy_stream, compute on compute_stream
     async_times = []
     if use_cuda:
         compute_stream = torch.cuda.Stream(device=device)
         copy_stream    = torch.cuda.Stream(device=device)
+        # Warmup the streams too
+        for _ in range(WARMUP):
+            with torch.cuda.stream(copy_stream):
+                copy_fn()
+            with torch.cuda.stream(compute_stream):
+                compute_fn()
+            copy_stream.synchronize()
+            compute_stream.synchronize()
+        _sync()
         for _ in range(n_reps):
             s, e = _record(), _record()
             s.record()
@@ -230,9 +254,9 @@ def measure_prefetch_overlap(
             t0 = _time.perf_counter()
             copy_fn(); compute_fn()
             async_times.append((_time.perf_counter() - t0) * 1000)
-    async_ms = sum(async_times) / len(async_times)
+    async_ms = _median(async_times)
 
-    # Compute-only time
+    # Compute-only time (median)
     compute_times = []
     for _ in range(n_reps):
         if use_cuda:
@@ -242,7 +266,7 @@ def measure_prefetch_overlap(
         else:
             t0 = _time.perf_counter(); compute_fn()
             compute_times.append((_time.perf_counter() - t0) * 1000)
-    compute_ms = sum(compute_times) / len(compute_times)
+    compute_ms = _median(compute_times)
 
     comm_ms       = max(sync_ms - compute_ms, 0.0)
     latency_saved = max(sync_ms - async_ms, 0.0)
