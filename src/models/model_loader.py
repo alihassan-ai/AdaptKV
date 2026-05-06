@@ -51,7 +51,7 @@ class ModelLoader:
         logger.info(f"Loading model '{model_name}' on {self.device} with dtype={dtype}...")
         try:
             load_kwargs = {
-                "dtype": dtype,
+                "torch_dtype": dtype,
                 "trust_remote_code": True,
                 "output_attentions": False,
             }
@@ -164,7 +164,7 @@ def load_model_for_experiments(
     dtype = torch.float16 if use_cuda else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        dtype=dtype,
+        torch_dtype=dtype,
         device_map={"": device} if use_cuda else None,
         attn_implementation="eager",   # required for output_attentions
         token=os.environ.get("HF_TOKEN"),
