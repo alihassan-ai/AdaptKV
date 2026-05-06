@@ -34,6 +34,7 @@ def load(name):
 
 
 def _no_data_fig(msg="No results yet — run experiments first"):
+    plt.close("all")
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.text(0.5, 0.5, msg, ha="center", va="center", fontsize=13, color="gray",
             transform=ax.transAxes)
@@ -41,8 +42,22 @@ def _no_data_fig(msg="No results yet — run experiments first"):
     return fig
 
 
+def _safe_fig(fn):
+    """Wrap a figure-generation function so exceptions return a fallback."""
+    import functools
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            plt.close("all")
+            return fn(*a, **kw)
+        except Exception as exc:
+            return _no_data_fig(f"Error: {exc}")
+    return wrapper
+
+
 # ── Tab 1: Overview ───────────────────────────────────────────────────────────
 
+@_safe_fig
 def make_overview_fig():
     experiments = [
         ("Exp 1", "Three-Tier vs Binary",   load("exp1_results")),
@@ -100,6 +115,7 @@ def overview_sysinfo():
 
 # ── Tab 2: Three-Tier ─────────────────────────────────────────────────────────
 
+@_safe_fig
 def make_three_tier_fig():
     r = load("exp1_results")
     results = r.get("results", {})
@@ -143,6 +159,7 @@ def make_three_tier_fig():
 
 # ── Tab 3: Per-Head ───────────────────────────────────────────────────────────
 
+@_safe_fig
 def make_perhead_fig():
     r = load("exp2_results")
     if not r:
@@ -181,6 +198,7 @@ def make_perhead_fig():
 
 # ── Tab 4: Communication ──────────────────────────────────────────────────────
 
+@_safe_fig
 def make_comm_fig():
     r = load("exp3_results")
     if not r:
@@ -218,6 +236,7 @@ def make_comm_fig():
 
 # ── Tab 5: Async Prefetch ─────────────────────────────────────────────────────
 
+@_safe_fig
 def make_prefetch_fig():
     r = load("exp4_results")
     if not r:
@@ -257,6 +276,7 @@ def make_prefetch_fig():
 
 # ── Tab 6: Scaling ────────────────────────────────────────────────────────────
 
+@_safe_fig
 def make_scaling_fig():
     r = load("exp5_results")
     if not r:
@@ -303,6 +323,7 @@ def make_scaling_fig():
 
 # ── Tab 7: Memory Analysis ────────────────────────────────────────────────────
 
+@_safe_fig
 def make_memory_fig():
     r = load("exp6_results")
     if not r:
@@ -462,7 +483,7 @@ def analyze_tokens(text: str, budget_ratio: float, strategy: str):
 def build_app():
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    with gr.Blocks(title="AdaptKV Dashboard") as demo:
+    with gr.Blocks(title="AdaptKV Dashboard", theme=gr.themes.Base()) as demo:
         gr.Markdown("""
 # AdaptKV: Adaptive KV Cache Compression
 ### Proof-of-Concept Experiments Dashboard
@@ -596,5 +617,4 @@ Run `bash run.sh` to populate results, then refresh each tab.
 
 if __name__ == "__main__":
     demo = build_app()
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=True, show_error=True,
-                theme=gr.themes.Base())
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=True, show_error=True)
