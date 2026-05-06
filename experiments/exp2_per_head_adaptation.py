@@ -79,18 +79,11 @@ def perhead_retention(attn_layer: torch.Tensor, head_types: list, budget_ratio: 
         ht     = head_types[h] if h < len(head_types) else HEAD_LOCAL
         params = HeadClassifier.TYPE_PARAMS[ht]
 
-        if ht == HEAD_SINK:
-            sink_n = min(4, S)
-            remain_k = budget_k - sink_n
-            sorted_idx = imp.argsort(descending=True)
-            non_sink = [i for i in sorted_idx.tolist() if i >= sink_n]
-            fp16_idx = list(range(sink_n))
-            comp_k   = min(len(non_sink), max(0, remain_k + int(budget_k * params["compress_ratio"])))
-            comp_idx = non_sink[:comp_k]
-        else:
-            fp16_idx, comp_idx = adaptkv_select_tokens(
-                imp, budget_k, params["fp16_ratio"], params["compress_ratio"]
-            )
+        # All head types use importance-based selection with type-specific ratios.
+        # Sink tokens naturally rank high by importance and get selected anyway.
+        fp16_idx, comp_idx = adaptkv_select_tokens(
+            imp, budget_k, params["fp16_ratio"], params["compress_ratio"]
+        )
 
         fp16_mass = imp[fp16_idx].sum().item() if fp16_idx else 0.0
         comp_mass = imp[comp_idx].sum().item() * QUALITY if comp_idx else 0.0
@@ -191,15 +184,8 @@ def run(device: str = "cuda:0", save_dir: str = "results"):
                 pertype_uniform[ht].append(u_r)
 
                 ph_p = HeadClassifier.TYPE_PARAMS[ht]
-                if ht == HEAD_SINK:
-                    sn = min(4, imp.shape[0])
-                    non_s = [i for i in imp.argsort(descending=True).tolist() if i >= sn]
-                    ck = min(len(non_s), bk + int(bk * ph_p["compress_ratio"]))
-                    ci = non_s[:ck]
-                    p_r = (imp[list(range(sn))].sum() + imp[ci].sum() * QUALITY).item() / max(total, 1e-8)
-                else:
-                    fp2, cp2 = adaptkv_select_tokens(imp, bk, ph_p["fp16_ratio"], ph_p["compress_ratio"])
-                    p_r = (imp[fp2].sum() + imp[cp2].sum() * QUALITY).item() / max(total, 1e-8)
+                fp2, cp2 = adaptkv_select_tokens(imp, bk, ph_p["fp16_ratio"], ph_p["compress_ratio"])
+                p_r = (imp[fp2].sum() + imp[cp2].sum() * QUALITY).item() / max(total, 1e-8)
                 pertype_perhead[ht].append(p_r)
 
     all_u = [v for vals in uniform_results.values() for v in vals]
