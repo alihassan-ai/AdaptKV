@@ -169,3 +169,82 @@ class QuantizedKVEntry:
     def nbytes(self) -> int:
         return (self.k_packed.nelement() * self.k_packed.element_size()
                 + self.v_packed.nelement() * self.v_packed.element_size())
+
+
+# ── Group-wise 4-bit absmax quantization (used by experiments) ────────────────
+
+_GROUP_SIZE = 128
+
+
+def quantize_4bit(
+    tensor: torch.Tensor,
+    group_size: int = _GROUP_SIZE,
+):
+    """Quantize an FP16/FP32 tensor to 4-bit signed integers.
+
+    Groups of `group_size` elements share one absmax scale.
+    Quantization range: [-8, 7] (symmetric 4-bit signed).
+
+    Returns:
+        quantized: int8 tensor  [num_groups, group_size]
+        scale:     FP32 per-group scale  [num_groups, 1]
+        shape:     original shape (needed for dequantization)
+    """
+    import torch.nn.functional as F
+    shape = tensor.shape
+    flat  = tensor.reshape(-1).float()
+    n     = flat.shape[0]
+
+    pad = (group_size - n % group_size) % group_size
+    if pad:
+        flat = F.pad(flat, (0, pad))
+
+    groups = flat.reshape(-1, group_size)
+    absmax = groups.abs().amax(dim=-1, keepdim=True).clamp(min=1e-6)
+    scale  = absmax / 7.0
+    quantized = (groups / scale).round().clamp(-8, 7).to(torch.int8)
+    return quantized.reshape(-1, group_size), scale, shape
+
+
+def dequantize_4bit(
+    quantized: torch.Tensor,
+    scale: torch.Tensor,
+    shape: torch.Size,
+    target_dtype: torch.dtype = torch.float16,
+) -> torch.Tensor:
+    """Reconstruct an approximate FP tensor from 4-bit quantized data."""
+    n_orig = 1
+    for s in shape:
+        n_orig *= s
+    dequant = (quantized.float() * scale).reshape(-1)[:n_orig]
+    return dequant.reshape(shape).to(target_dtype)
+
+
+def measure_quantization_error(original: torch.Tensor) -> dict:
+    """Quantize then dequantize and measure reconstruction quality."""
+    import torch.nn.functional as F
+    q, sc, sh = quantize_4bit(original.float())
+    recon = dequantize_4bit(q, sc, sh, original.dtype)
+
+    orig_f = original.float()
+    rec_f  = recon.float()
+
+    mse = ((orig_f - rec_f) ** 2).mean().item()
+
+    if orig_f.dim() >= 2:
+        cos = F.cosine_similarity(
+            orig_f.reshape(-1, orig_f.shape[-1]),
+            rec_f.reshape(-1, rec_f.shape[-1]),
+            dim=-1,
+        ).mean().item()
+    else:
+        cos = F.cosine_similarity(orig_f.unsqueeze(0), rec_f.unsqueeze(0)).item()
+
+    rel_err = ((orig_f - rec_f).abs() / (orig_f.abs() + 1e-6)).mean().item()
+
+    return {
+        "mse":              mse,
+        "cosine_similarity": cos,
+        "relative_error":   rel_err,
+        "bits_saved_ratio": 0.75,  # 4-bit vs 16-bit = 75% savings
+    }

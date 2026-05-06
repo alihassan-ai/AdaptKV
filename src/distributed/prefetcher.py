@@ -162,3 +162,120 @@ class AsyncPrefetcher:
         self._buffer_b.clear()
         self._prefetch_token_ids = []
         self._prefetch_ready.clear()
+
+
+# ── CUDA-stream experiment utilities ──────────────────────────────────────────
+
+def measure_prefetch_overlap(
+    compute_fn,
+    copy_fn,
+    device: str = "cuda:0",
+    n_reps: int = 10,
+) -> dict:
+    """Measure latency with and without async prefetch using CUDA Events.
+
+    Uses two CUDA streams (compute_stream, copy_stream) on a single GPU to
+    measure real compute/communication overlap — no multi-GPU required.
+
+    Returns dict with: sync_ms, async_ms, compute_ms, comm_ms,
+                       latency_saved_ms, overlap_pct
+    """
+    import time as _time
+    use_cuda = torch.cuda.is_available() and "cuda" in device
+
+    def _record():
+        if use_cuda:
+            return torch.cuda.Event(enable_timing=True)
+        return None
+
+    def _sync():
+        if use_cuda:
+            torch.cuda.synchronize(device)
+
+    # Sequential baseline
+    sync_times = []
+    for _ in range(n_reps):
+        if use_cuda:
+            s, e = _record(), _record()
+            s.record()
+        else:
+            t0 = _time.perf_counter()
+        copy_fn()
+        compute_fn()
+        if use_cuda:
+            e.record(); _sync()
+            sync_times.append(s.elapsed_time(e))
+        else:
+            sync_times.append((_time.perf_counter() - t0) * 1000)
+    sync_ms = sum(sync_times) / len(sync_times)
+
+    # Overlapped: copy on copy_stream, compute on compute_stream
+    async_times = []
+    if use_cuda:
+        compute_stream = torch.cuda.Stream(device=device)
+        copy_stream    = torch.cuda.Stream(device=device)
+        for _ in range(n_reps):
+            s, e = _record(), _record()
+            s.record()
+            with torch.cuda.stream(copy_stream):
+                copy_fn()
+            with torch.cuda.stream(compute_stream):
+                compute_fn()
+            copy_stream.synchronize()
+            compute_stream.synchronize()
+            e.record(); _sync()
+            async_times.append(s.elapsed_time(e))
+    else:
+        for _ in range(n_reps):
+            t0 = _time.perf_counter()
+            copy_fn(); compute_fn()
+            async_times.append((_time.perf_counter() - t0) * 1000)
+    async_ms = sum(async_times) / len(async_times)
+
+    # Compute-only time
+    compute_times = []
+    for _ in range(n_reps):
+        if use_cuda:
+            s, e = _record(), _record()
+            s.record(); compute_fn(); e.record(); _sync()
+            compute_times.append(s.elapsed_time(e))
+        else:
+            t0 = _time.perf_counter(); compute_fn()
+            compute_times.append((_time.perf_counter() - t0) * 1000)
+    compute_ms = sum(compute_times) / len(compute_times)
+
+    comm_ms       = max(sync_ms - compute_ms, 0.0)
+    latency_saved = max(sync_ms - async_ms, 0.0)
+    overlap_pct   = min((latency_saved / max(comm_ms, 0.001)) * 100.0, 100.0)
+
+    return {
+        "sync_ms":          sync_ms,
+        "async_ms":         async_ms,
+        "compute_ms":       compute_ms,
+        "comm_ms":          comm_ms,
+        "latency_saved_ms": latency_saved,
+        "overlap_pct":      max(0.0, overlap_pct),
+    }
+
+
+def benchmark_single_gpu_streams(
+    tensor_shape: tuple = (512, 512),
+    dtype: torch.dtype = torch.float16,
+    device: str = "cuda:0",
+    n_reps: int = 20,
+) -> dict:
+    """Benchmark CUDA stream overlap for compute + copy on one GPU."""
+    if not torch.cuda.is_available():
+        return {"note": "CUDA not available"}
+
+    src   = torch.randn(tensor_shape, dtype=dtype, device=device)
+    dst   = torch.empty_like(src)
+    dummy = torch.randn(1024, 1024, dtype=dtype, device=device)
+
+    def compute_fn():
+        torch.mm(dummy, dummy.T)
+
+    def copy_fn():
+        dst.copy_(src, non_blocking=True)
+
+    return measure_prefetch_overlap(compute_fn, copy_fn, device, n_reps)

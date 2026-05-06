@@ -123,3 +123,85 @@ def load_model(config: Dict[str, Any]) -> Dict[str, Any]:
     torch.manual_seed(42)
     loader = ModelLoader(config)
     return loader.load()
+
+
+# ── Experiment-friendly functional API ────────────────────────────────────────
+
+def load_model_for_experiments(
+    device: str = "cuda:0",
+    force_small: bool = False,
+):
+    """Load a model suitable for experiments — auto-selects size by VRAM.
+
+    Decision:
+      - HF_TOKEN set + GPU > 30 GB VRAM  →  meta-llama/Meta-Llama-3-8B
+      - Otherwise                         →  facebook/opt-1.3b
+
+    Returns: (model, tokenizer, model_name)
+    """
+    import os
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    use_cuda = torch.cuda.is_available() and "cuda" in device
+
+    if (not force_small
+            and os.environ.get("HF_TOKEN")
+            and use_cuda
+            and torch.cuda.get_device_properties(device).total_memory > 30 * 1024**3):
+        model_name = "meta-llama/Meta-Llama-3-8B"
+    else:
+        model_name = "facebook/opt-1.3b"
+
+    logger.info(f"Loading {model_name} on {device} ...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        token=os.environ.get("HF_TOKEN"),
+        use_fast=True,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    dtype = torch.float16 if use_cuda else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        device_map={"": device} if use_cuda else None,
+        attn_implementation="eager",   # required for output_attentions
+        token=os.environ.get("HF_TOKEN"),
+    )
+    if not use_cuda:
+        model = model.to("cpu")
+    model.eval()
+
+    n_params = sum(p.numel() for p in model.parameters()) / 1e9
+    logger.info(f"Loaded {model_name} ({n_params:.1f}B params)")
+    return model, tokenizer, model_name
+
+
+def get_attention_weights(
+    model,
+    tokenizer,
+    text: str,
+    device: str,
+    max_length: int = 256,
+):
+    """Run one forward pass and return per-layer attention tensors.
+
+    Returns:
+        attentions: list of [num_heads, seq_len, seq_len] float tensors (one per layer)
+        seq_len:    actual sequence length after truncation
+    """
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=max_length,
+        padding=False,
+    )
+    input_ids = inputs["input_ids"].to(device)
+
+    with torch.no_grad():
+        outputs = model(input_ids, output_attentions=True, use_cache=False)
+
+    attentions = [a.squeeze(0).float().cpu() for a in outputs.attentions]
+    return attentions, input_ids.shape[1]

@@ -307,3 +307,40 @@ class AdaptKVCache(BaseKVCache):
         self._compressed = [None] * self.num_layers
         self._cumulative_scores = [None] * self.num_layers
         self._compressed_count = [0] * self.num_layers
+
+
+# ── Functional API used by experiments ────────────────────────────────────────
+
+# Memory-equivalence constants (budget_ratio=0.10):
+#   H2O:     0.10 × S × 2B         = 0.20 × S bytes
+#   AdaptKV: 0.04 × S × 2B
+#          + 0.24 × S × 0.5B       = 0.08 + 0.12 = 0.20 × S bytes  ✓
+FP16_RATIO      = 0.4   # fraction of budget stored at FP16
+COMPRESS_RATIO  = 2.4   # fraction of budget stored at INT4/compressed
+COMPRESS_QUALITY = 0.95  # approximate attention-mass retention after compression
+
+
+def adaptkv_select_tokens(
+    importance: torch.Tensor,
+    budget_k: int,
+    fp16_ratio: float = FP16_RATIO,
+    compress_ratio: float = COMPRESS_RATIO,
+) -> tuple:
+    """Select token indices for FP16 and compressed tiers.
+
+    Args:
+        importance: [S] per-token importance scores (higher = more important)
+        budget_k:   total number of budget slots
+        fp16_ratio: fraction of budget_k kept at FP16
+        compress_ratio: fraction of budget_k kept compressed (INT4)
+
+    Returns:
+        (fp16_indices, compressed_indices)  — lists of int token indices
+    """
+    fp16_k = max(1, int(budget_k * fp16_ratio))
+    int4_k = max(1, int(budget_k * compress_ratio))
+
+    sorted_idx = torch.argsort(importance, descending=True)
+    fp16_idx  = sorted_idx[:fp16_k].tolist()
+    comp_idx  = sorted_idx[fp16_k: fp16_k + int4_k].tolist()
+    return fp16_idx, comp_idx
